@@ -70,24 +70,25 @@ jobs:
           SSLPUB_FULL="$(sudo cat $CERT_PATH/fullchain.pem)"
           SSLPUB_LEAF="$(sudo cat $CERT_PATH/cert.pem)"
           SSLPRI="$(sudo cat $CERT_PATH/privkey.pem)"
-          CERT_NAME="le-auto-$(date +%Y%m%d)"
 
           push_cert() {
-            local D="$1"; local PUB="$2"
+            local D="$1"; local PUB="$2"; local NAME="$3"
             sudo aliyun cdn SetCdnDomainSSLCertificate \
               --DomainName "$D" \
               --SSLProtocol on \
               --CertType upload \
               --SSLPub "$PUB" \
               --SSLPri "$SSLPRI" \
-              --CertName "$CERT_NAME"
+              --CertName "$NAME"
           }
 
           for D in "${{ secrets.DOMAIN }}" $EXTRA_DOMAINS; do
             echo "== 推送证书到 CDN 域名: $D"
-            if push_cert "$D" "$SSLPUB_FULL"; then
+            # 每个域名用不同的证书名，避免 CertNameAlreadyExists
+            CERT_NAME="le-$(echo "$D" | tr '.' '-')-$(date +%Y%m%d)"
+            if push_cert "$D" "$SSLPUB_FULL" "$CERT_NAME"; then
               echo "[ok] $D 已更新（完整链）"
-            elif echo "  [info] 完整链被拒，改用单证书重试..." && push_cert "$D" "$SSLPUB_LEAF"; then
+            elif echo "  [info] 完整链被拒，改用单证书重试..." && push_cert "$D" "$SSLPUB_LEAF" "$CERT_NAME-leaf"; then
               echo "[ok] $D 已更新（单证书）"
             else
               echo "[warn] $D 推送失败，已跳过，不影响其他步骤"

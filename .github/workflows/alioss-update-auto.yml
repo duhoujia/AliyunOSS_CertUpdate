@@ -1,10 +1,12 @@
 name: alioss-update-auto
 env:
   TZ: Asia/Shanghai
+  # 需要一并部署到 CDN 的域名（第一个是 secrets.DOMAIN 本身，下面这些是额外的）
+  EXTRA_DOMAINS: "ccoib.cn"
 
 on:
   schedule:
-    - cron: "0 20 2 * *" # 时区对cron无效，所以要提前8个小时，
+    - cron: "0 20 2 * *" # 每月2日20:00 UTC = 每月3日04:00 北京时间
   workflow_dispatch:
 
 jobs:
@@ -16,6 +18,7 @@ jobs:
 
       - name: Init Action
         run: |
+          sudo apt-get update
           sudo apt install -y certbot
           pip install -r requirements.txt
 
@@ -35,7 +38,8 @@ jobs:
       - name: Apply for a new certificate
         run: |
           sudo mkdir -p /etc/letsencrypt/certs
-          sudo certbot certonly -d "${{ secrets.DOMAIN }}" --manual --preferred-challenges dns \
+          sudo certbot certonly -d "${{ secrets.DOMAIN }}" -d "ccoib.cn" \
+                --manual --preferred-challenges dns \
                 --manual-auth-hook "/usr/local/bin/alidns" \
                 --manual-cleanup-hook "/usr/local/bin/alidns clean" \
                 --agree-tos --email ${{ secrets.EMAIL }} --non-interactive
@@ -53,3 +57,33 @@ jobs:
             --target-cname "${{ secrets.DOMAIN }}" \
             --private-key "$PRIVATE_KEY" \
             --certificate "$CERTIFICATE"
+
+      # ============================================================
+      # 新增：把同一张证书同步部署到阿里云 CDN（www + 裸域）
+      # continue-on-error: true —— 这一步失败不会让整次任务变红，也不发失败通知
+      # ============================================================
+      - name: Deploy cert to Aliyun CDN (silent, 失败不报红)
+        continue-on-error: true
+        run: |
+          CERT_PATH="/etc/letsencrypt/live/${{ secrets.DOMAIN }}"
+          CERT_B64=$(sudo cat $CERT_PATH/fullchain.pem | base64 -w 0)
+          KEY_B64=$(sudo cat $CERT_PATH/privkey.pem | base64 -w 0)
+          CERT_NAME="le-auto-$(date +%Y%m%d)"
+
+          for D in "${{ secrets.DOMAIN }}" $EXTRA_DOMAINS; do
+            echo "== 推送证书到 CDN 域名: $D"
+            sudo aliyun cdn SetDomainServerCertificate \
+              --DomainName "$D" \
+              --ServerCertificateStatus on \
+              --CertType upload \
+              --ServerCertificate "$CERT_B64" \
+              --PrivateKey "$KEY_B64" \
+              --CertName "$CERT_NAME" \
+              && echo "[ok] $D 已更新" \
+              || echo "[warn] $D 推送失败，已跳过，不影响其他步骤"
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "任务结束。OSS 与 CDN 的证书均已尝试更新；失败的步骤已在日志中标注 [warn]，不会影响整体状态。"
